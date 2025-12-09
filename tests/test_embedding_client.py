@@ -90,7 +90,7 @@ class TestAsyncEmbeddingClient:
         mock_encoding.encode.return_value = list(range(10))
         mock_encoding.decode.return_value = "decoded"
 
-        with patch("embedding_client.tiktoken") as mock:
+        with patch("embedding.tiktoken") as mock:
             mock.encoding_for_model.return_value = mock_encoding
             mock.get_encoding.return_value = mock_encoding
             yield mock
