@@ -6,7 +6,6 @@ Pydantic Settingsを使用した型安全な設定管理。
 """
 
 from functools import lru_cache
-from typing import Optional
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -90,7 +89,7 @@ class AzureAISearchSettings(BaseSettings):
         min_length=1,
         max_length=128,
     )
-    semantic_config_name: Optional[str] = Field(
+    semantic_config_name: str | None = Field(
         default=None,
         description="セマンティック検索設定名（オプション）",
     )
@@ -172,9 +171,9 @@ class Settings(BaseSettings):
     )
 
     # Lazy initialization to avoid multiple .env reads
-    _azure_openai: Optional[AzureOpenAISettings] = None
-    _azure_search: Optional[AzureAISearchSettings] = None
-    _rate_limit: Optional[RateLimitSettings] = None
+    _azure_openai: AzureOpenAISettings | None = None
+    _azure_search: AzureAISearchSettings | None = None
+    _rate_limit: RateLimitSettings | None = None
 
     # アプリケーション設定
     log_level: str = Field(
@@ -216,7 +215,7 @@ class Settings(BaseSettings):
         return self._rate_limit
 
 
-@lru_cache()
+@lru_cache
 def get_settings() -> Settings:
     """
     設定のシングルトンインスタンスを取得。
@@ -287,4 +286,3 @@ if __name__ == "__main__":
     for key, valid in validation_results.items():
         status = "✓" if valid else "✗"
         print(f"{status} {key}: {'OK' if valid else 'FAILED'}")
-
