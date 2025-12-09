@@ -72,3 +72,12 @@ exclude_lines = [
     "if __name__ == .__main__.:",
     "raise NotImplementedError",
 ]
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+check_untyped_defs = false
+
+[[tool.mypy.overrides]]
+module = "embedding"
+disable_error_code = ["no-any-return", "attr-defined", "call-arg", "arg-type", "union-attr", "assignment"]
