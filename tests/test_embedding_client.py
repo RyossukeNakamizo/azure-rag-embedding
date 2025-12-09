@@ -12,7 +12,7 @@ class TestEmbeddingResult:
 
     def test_dataclass_creation(self):
         """データクラスが正しく作成されること"""
-        from embedding_client import EmbeddingResult
+        from embedding import EmbeddingResult
 
         result = EmbeddingResult(
             text="test",
@@ -30,7 +30,7 @@ class TestBatchEmbeddingResult:
 
     def test_default_failed_indices(self):
         """failed_indicesのデフォルトが空リストであること"""
-        from embedding_client import BatchEmbeddingResult
+        from embedding import BatchEmbeddingResult
 
         result = BatchEmbeddingResult(
             results=[],
@@ -45,7 +45,7 @@ class TestRateLimitState:
 
     def test_initial_state(self):
         """初期状態が正しいこと"""
-        from embedding_client import RateLimitState
+        from embedding import RateLimitState
 
         state = RateLimitState()
         assert state.requests_this_minute == 0
@@ -53,7 +53,7 @@ class TestRateLimitState:
 
     def test_record_request(self):
         """リクエスト記録が正しく動作すること"""
-        from embedding_client import RateLimitState
+        from embedding import RateLimitState
 
         state = RateLimitState()
         state.record_request(100)
@@ -63,7 +63,7 @@ class TestRateLimitState:
     def test_can_process_within_limits(self):
         """制限内でcan_processがTrueを返すこと"""
         from config import RateLimitSettings
-        from embedding_client import RateLimitState
+        from embedding import RateLimitState
 
         state = RateLimitState()
         settings = RateLimitSettings()
@@ -73,7 +73,7 @@ class TestRateLimitState:
         """asyncio.Lockを持っていること"""
         import asyncio
 
-        from embedding_client import RateLimitState
+        from embedding import RateLimitState
 
         state = RateLimitState()
         assert hasattr(state, "_lock")
@@ -95,24 +95,24 @@ class TestAsyncEmbeddingClient:
             mock.get_encoding.return_value = mock_encoding
             yield mock
 
-    def test_mask_url(self, _mock_tiktoken):
+    def test_mask_url(self, mock_tiktoken):
         """URLマスクが正しく動作すること"""
-        from embedding_client import AsyncEmbeddingClient
+        from embedding import AsyncEmbeddingClient
 
         masked = AsyncEmbeddingClient._mask_url("https://my-resource.openai.azure.com/")
         assert "my-resource" not in masked or "***" in masked
 
-    def test_count_tokens(self, _mock_tiktoken):
+    def test_count_tokens(self, mock_tiktoken):
         """トークンカウントが動作すること"""
-        from embedding_client import AsyncEmbeddingClient
+        from embedding import AsyncEmbeddingClient
 
         client = AsyncEmbeddingClient()
         count = client.count_tokens("test text")
         assert isinstance(count, int)
 
-    def test_calculate_backoff_delay(self, _mock_tiktoken):
+    def test_calculate_backoff_delay(self, mock_tiktoken):
         """バックオフ計算が指数関数的に増加すること"""
-        from embedding_client import AsyncEmbeddingClient
+        from embedding import AsyncEmbeddingClient
 
         client = AsyncEmbeddingClient()
 
@@ -124,9 +124,9 @@ class TestAsyncEmbeddingClient:
         assert delay1 > delay0
         assert delay2 > delay1
 
-    def test_aggregate_embeddings_mean(self, _mock_tiktoken):
+    def test_aggregate_embeddings_mean(self, mock_tiktoken):
         """mean集約が正しく計算されること"""
-        from embedding_client import AsyncEmbeddingClient
+        from embedding import AsyncEmbeddingClient
 
         client = AsyncEmbeddingClient()
         embeddings = [[1.0, 2.0], [3.0, 4.0]]
@@ -134,9 +134,9 @@ class TestAsyncEmbeddingClient:
 
         assert result == [2.0, 3.0]
 
-    def test_aggregate_embeddings_first(self, _mock_tiktoken):
+    def test_aggregate_embeddings_first(self, mock_tiktoken):
         """first集約が最初の要素を返すこと"""
-        from embedding_client import AsyncEmbeddingClient
+        from embedding import AsyncEmbeddingClient
 
         client = AsyncEmbeddingClient()
         embeddings = [[1.0, 2.0], [3.0, 4.0]]
@@ -144,18 +144,18 @@ class TestAsyncEmbeddingClient:
 
         assert result == [1.0, 2.0]
 
-    def test_aggregate_embeddings_invalid_method(self, _mock_tiktoken):
+    def test_aggregate_embeddings_invalid_method(self, mock_tiktoken):
         """無効な集約方法でエラーが発生すること"""
-        from embedding_client import AsyncEmbeddingClient
+        from embedding import AsyncEmbeddingClient
 
         client = AsyncEmbeddingClient()
 
         with pytest.raises(ValueError, match="Unknown aggregation method"):
             client._aggregate_embeddings([[1.0]], [1], "invalid")
 
-    def test_create_batches(self, _mock_tiktoken):
+    def test_create_batches(self, mock_tiktoken):
         """バッチ作成が正しく動作すること"""
-        from embedding_client import AsyncEmbeddingClient
+        from embedding import AsyncEmbeddingClient
 
         client = AsyncEmbeddingClient()
         texts = ["a", "b", "c", "d", "e"]
@@ -173,7 +173,7 @@ class TestCustomExceptions:
 
     def test_exception_hierarchy(self):
         """例外階層が正しいこと"""
-        from embedding_client import (
+        from embedding import (
             EmbeddingClientError,
             MaxRetriesExceededError,
         )
@@ -183,7 +183,7 @@ class TestCustomExceptions:
 
     def test_max_retries_error_message(self):
         """MaxRetriesExceededErrorのメッセージが正しいこと"""
-        from embedding_client import MaxRetriesExceededError
+        from embedding import MaxRetriesExceededError
 
         error = MaxRetriesExceededError("Test message")
         assert str(error) == "Test message"
