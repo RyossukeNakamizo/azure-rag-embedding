@@ -527,7 +527,9 @@ class AzureOpenAIEmbedding:
             try:
                 embeddings = await self._embed_with_retry(batch_texts, sum(batch_tokens))
 
-                for text, embedding, tokens in zip(batch_texts, embeddings, batch_tokens, strict=True):
+                for text, embedding, tokens in zip(
+                    batch_texts, embeddings, batch_tokens, strict=True
+                ):
                     results.append(
                         EmbeddingResult(
                             text=text,
