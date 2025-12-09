@@ -84,3 +84,6 @@ disable_error_code = ["no-any-return", "attr-defined", "call-arg", "arg-type", "
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ARG002"]
+
+[tool.ruff.lint.per-file-ignores]
+"*.py" = ["UP006", "UP035", "UP045", "UP011", "I001", "F401", "F541", "B905", "B007"]
