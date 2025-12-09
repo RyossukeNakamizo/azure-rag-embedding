@@ -150,7 +150,7 @@ class TestAsyncEmbeddingClient:
 
         client = AsyncEmbeddingClient()
 
-        with pytest.raises(ValueError, match="Unknown aggregation method"):
+        with pytest.raises(ValueError, match="無効な集約方法"):
             client._aggregate_embeddings([[1.0]], [1], "invalid")
 
     def test_create_batches(self, mock_tiktoken):
