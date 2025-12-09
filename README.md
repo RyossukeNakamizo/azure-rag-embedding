@@ -33,20 +33,60 @@ cp .env.example .env
 ```env
 AZURE_OPENAI_ENDPOINT=https://your-resource-name.openai.azure.com/
 AZURE_OPENAI_API_KEY=your-api-key-here
-AZURE_OPENAI_API_VERSION=2024-02-15-preview
-AZURE_OPENAI_DEPLOYMENT_NAME=text-embedding-3-large
-AZURE_OPENAI_MAX_BATCH_SIZE=16
+AZURE_OPENAI_API_VERSION=2024-10-21
+AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-3-large
+AZURE_OPENAI_EMBEDDING_DIMENSIONS=1536
+BATCH_SIZE=16
 ```
 
 ### 環境変数の説明
 
 - `AZURE_OPENAI_ENDPOINT`: Azure OpenAIエンドポイントURL（必須）
 - `AZURE_OPENAI_API_KEY`: APIキー（必須）
-- `AZURE_OPENAI_API_VERSION`: APIバージョン（デフォルト: `2024-02-15-preview`）
-- `AZURE_OPENAI_DEPLOYMENT_NAME`: デプロイメント名（デフォルト: `text-embedding-3-large`）
-- `AZURE_OPENAI_MAX_BATCH_SIZE`: バッチサイズ（デフォルト: `16`）
+- `AZURE_OPENAI_API_VERSION`: APIバージョン（デフォルト: `2024-10-21`）
+- `AZURE_OPENAI_EMBEDDING_DEPLOYMENT`: Embeddingモデルのデプロイメント名（必須）
+- `AZURE_OPENAI_EMBEDDING_DIMENSIONS`: Embeddingベクトルの次元数（デフォルト: `1536`）
+- `BATCH_SIZE`: バッチサイズ（デフォルト: `16`）
+
+### レート制限設定（オプション）
+
+```env
+RATE_LIMIT_MAX_RETRIES=3
+RATE_LIMIT_BASE_DELAY=1.0
+RATE_LIMIT_MAX_DELAY=60.0
+RATE_LIMIT_REQUESTS_PER_MINUTE=60
+RATE_LIMIT_TOKENS_PER_MINUTE=150000
+```
 
 ## 使用方法
+
+このライブラリには2つのクライアントクラスが提供されています：
+
+- **`AzureOpenAIEmbedding`**: 従来のクライアント（後方互換性のため維持）
+- **`AsyncEmbeddingClient`**: 新しい推奨クライアント（よりシンプルで保守しやすい）
+
+### AsyncEmbeddingClient（推奨）
+
+```python
+import asyncio
+from embedding import AsyncEmbeddingClient
+
+async def main():
+    async with AsyncEmbeddingClient() as client:
+        # 単一テキスト
+        result = await client.embed_single("Azure AI Searchでベクトル検索を実装する")
+        print(f"次元数: {len(result.embedding)}, トークン数: {result.token_count}")
+        
+        # バッチ処理
+        texts = ["テキスト1", "テキスト2", "テキスト3"]
+        batch_result = await client.embed_batch(texts)
+        print(f"生成数: {len(batch_result.results)}, 総トークン数: {batch_result.total_tokens}")
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+### AzureOpenAIEmbedding（従来のクライアント）
 
 ### 基本的な使用例
 
@@ -146,6 +186,7 @@ async def main():
         deployment_name="custom-deployment",
         max_batch_size=8,
         max_retries=3,
+        embedding_dimensions=1536,
     )
     
     text = "カスタム設定の例"
@@ -268,24 +309,41 @@ API使用統計情報を取得します。
 
 デフォルトでは、以下の設定でリトライが行われます：
 
-- **最大リトライ回数**: 5回
-- **待機時間**: Exponential backoff（最小1秒、最大60秒）
-- **リトライ対象**: `RateLimitError`、`APIError`
+- **最大リトライ回数**: 3回（`RATE_LIMIT_MAX_RETRIES`で変更可能）
+- **待機時間**: Exponential backoff（基本1秒、最大60秒）
+- **リトライ対象**: `RateLimitError`、`APITimeoutError`、サーバーエラー（5xx）
 
-リトライ設定は初期化時に変更できます：
+リトライ設定は環境変数で変更できます：
+
+```env
+RATE_LIMIT_MAX_RETRIES=5
+RATE_LIMIT_BASE_DELAY=1.0
+RATE_LIMIT_MAX_DELAY=60.0
+```
+
+または、`RateLimitSettings`を直接指定：
 
 ```python
-embedding = AzureOpenAIEmbedding(
-    max_retries=10,  # 最大リトライ回数を10回に変更
+from config import RateLimitSettings
+from embedding import AsyncEmbeddingClient
+
+rate_limit = RateLimitSettings(
+    max_retries=5,
+    base_delay=2.0,
+    max_delay=120.0,
 )
+client = AsyncEmbeddingClient(rate_limit_settings=rate_limit)
 ```
 
 ## 注意事項
 
 - Azure OpenAI ServiceのエンドポイントとAPIキーが必要です
+- `AZURE_OPENAI_EMBEDDING_DEPLOYMENT`は必須環境変数です（デフォルト値なし）
 - バッチサイズは最大16テキスト/リクエストが推奨されています
-- トークン数カウントは`tiktoken`ライブラリを使用していますが、APIレスポンスからも取得可能です
+- Embedding次元数のデフォルトは1536です（`AZURE_OPENAI_EMBEDDING_DIMENSIONS`で変更可能）
+- トークン数カウントは`tiktoken`ライブラリを使用しています
 - 非同期処理を使用するため、`asyncio.run()`または`await`を使用してください
+- `AsyncEmbeddingClient`の使用を推奨します（よりシンプルで保守しやすい実装）
 
 ## ライセンス
 
