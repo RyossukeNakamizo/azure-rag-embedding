@@ -1,0 +1,28 @@
+# Cursor Rules for Multi-Agent Support
+
+## Multi-Agent Configuration
+- Enable multi-agent collaboration
+- Allow parallel agent execution
+- Support Cloud Agents functionality
+- Use multiple agents for complex tasks
+- Agents can work in parallel when beneficial
+
+## Agent Behavior
+- Agents should work collaboratively
+- Multiple agents can process tasks simultaneously
+- Agent coordination is enabled
+- Each agent can specialize in different aspects of the task
+
+## Composer Settings
+- Multi-agent mode: enabled
+- Agent count cycling: enabled (use Shift+Cmd+/ to cycle)
+- Cloud Agents: enabled
+- Maximum agents: 4
+- Allow agent parallelization: true
+
+## Instructions for Multi-Agent Usage
+- When tasks are complex, use multiple agents
+- Agents can divide work and collaborate
+- Use the agent count selector (1x, 2x, 3x, 4x) in Composer UI
+- Press Shift+Cmd+/ to cycle through agent counts
+
