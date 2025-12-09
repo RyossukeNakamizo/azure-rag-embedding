@@ -19,7 +19,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install Ruff
-        run: pip install ruff
+        run: pip install --no-cache-dir ruff
 
       - name: Run Ruff Linter
         run: ruff check . --output-format=github
@@ -40,8 +40,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt
-          pip install mypy types-requests
+          pip install --no-cache-dir -r requirements.txt
+          pip install --no-cache-dir mypy types-requests
 
       - name: Run mypy
         run: mypy . --ignore-missing-imports
@@ -59,8 +59,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -r requirements.txt
-          pip install pytest pytest-asyncio pytest-cov
+          pip install --no-cache-dir -r requirements.txt
+          pip install --no-cache-dir pytest pytest-asyncio pytest-cov
 
       - name: Run tests
         env:
@@ -85,7 +85,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install Bandit
-        run: pip install bandit
+        run: pip install --no-cache-dir bandit
 
       - name: Run Bandit Security Scan
         run: bandit -r . -x ./tests -f json -o bandit-report.json || true
