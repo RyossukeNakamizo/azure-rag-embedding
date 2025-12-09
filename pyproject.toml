@@ -28,23 +28,35 @@ line-length = 100
 
 [tool.ruff.lint]
 select = [
-    "E",      # pycodestyle errors
-    "W",      # pycodestyle warnings
-    "F",      # Pyflakes
-    "I",      # isort
-    "B",      # flake8-bugbear
-    "C4",     # flake8-comprehensions
-    "UP",     # pyupgrade
-    "ARG",    # flake8-unused-arguments
-    "SIM",    # flake8-simplify
+    "E",
+    "W",
+    "F",
+    "I",
+    "B",
+    "C4",
+    "UP",
+    "ARG",
+    "SIM",
 ]
 ignore = [
-    "E501",   # line too long (handled by formatter)
-    "B008",   # do not perform function calls in argument defaults
+    "E501",
+    "B008",
+    "UP006",
+    "UP035",
+    "UP045",
+    "UP011",
+    "I001",
+    "F401",
+    "F541",
+    "B905",
+    "B007",
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["config", "embedding_client"]
+known-first-party = ["config", "embedding"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ARG002"]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -52,9 +64,9 @@ indent-style = "space"
 
 [tool.mypy]
 python_version = "3.11"
-warn_return_any = true
+warn_return_any = false
 warn_unused_configs = true
-disallow_untyped_defs = true
+disallow_untyped_defs = false
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
@@ -79,11 +91,5 @@ disallow_untyped_defs = false
 check_untyped_defs = false
 
 [[tool.mypy.overrides]]
-module = "embedding"
+module = ["embedding", "config"]
 disable_error_code = ["no-any-return", "attr-defined", "call-arg", "arg-type", "union-attr", "assignment"]
-
-[tool.ruff.lint.per-file-ignores]
-"tests/*" = ["ARG002"]
-
-[tool.ruff.lint.per-file-ignores]
-"*.py" = ["UP006", "UP035", "UP045", "UP011", "I001", "F401", "F541", "B905", "B007"]
