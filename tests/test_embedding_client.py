@@ -1,5 +1,5 @@
 """
-embedding_client.py のユニットテスト
+embedding.py のユニットテスト
 """
 
 from unittest.mock import MagicMock, patch
