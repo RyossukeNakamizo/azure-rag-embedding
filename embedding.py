@@ -12,7 +12,9 @@ import random
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
+from urllib.parse import urlparse
 
+import httpx
 import numpy as np
 import tiktoken
 from dotenv import load_dotenv
@@ -21,8 +23,10 @@ from openai import AsyncAzureOpenAI, RateLimitError, APIError, APITimeoutError
 from config import (
     AzureOpenAISettings,
     RateLimitSettings,
+    Settings,
     get_azure_openai_settings,
     get_rate_limit_settings,
+    get_settings,
 )
 
 # .envファイルを読み込む
@@ -60,6 +64,12 @@ class RateLimitState:
     requests_this_minute: int = 0
     tokens_this_minute: int = 0
     minute_start: float = field(default_factory=time.time)
+    _lock: Optional[asyncio.Lock] = field(default=None, init=False)
+
+    def __post_init__(self) -> None:
+        """asyncio.Lockを初期化"""
+        if self._lock is None:
+            self._lock = asyncio.Lock()
 
     def reset_if_needed(self) -> None:
         """1分経過していたらカウンターをリセット"""
@@ -131,11 +141,11 @@ class AzureOpenAIEmbedding:
         Args:
             endpoint: Azure OpenAIエンドポイントURL（環境変数から読み込み可能）
             api_key: APIキー（環境変数から読み込み可能）
-            api_version: APIバージョン（デフォルト: 2024-02-15-preview）
-            deployment_name: デプロイメント名（デフォルト: text-embedding-3-large）
+            api_version: APIバージョン（デフォルト: 2024-10-21）
+            deployment_name: デプロイメント名（環境変数から読み込み可能）
             max_batch_size: 最大バッチサイズ（デフォルト: 16）
-            max_retries: 最大リトライ回数（デフォルト: 5）
-            embedding_dimensions: Embedding次元数（Noneの場合はデフォルト）
+            max_retries: 最大リトライ回数（デフォルト: RateLimitSettingsから取得）
+            embedding_dimensions: Embedding次元数（デフォルト: 1536）
             rate_limit_settings: レート制限設定（Noneの場合は環境変数から読み込み）
         """
         # 設定の読み込み（環境変数優先）
@@ -143,16 +153,17 @@ class AzureOpenAIEmbedding:
         self._rate_limit_settings = (
             rate_limit_settings or get_rate_limit_settings()
         )
+        app_settings = get_settings()
 
         # 引数で指定された値があればそれを使用、なければ環境変数から読み込んだ値を使用
         self.endpoint = endpoint or base_settings.endpoint
         self.api_key = api_key or base_settings.api_key
         self.api_version = api_version or base_settings.api_version
-        self.deployment_name = deployment_name or base_settings.deployment_name
-        self.max_batch_size = max_batch_size or base_settings.max_batch_size
+        self.deployment_name = deployment_name or base_settings.embedding_deployment
+        self.max_batch_size = max_batch_size or app_settings.batch_size
         self.max_retries = max_retries or self._rate_limit_settings.max_retries
-        self.retry_min_wait = base_settings.retry_min_wait
-        self.retry_max_wait = base_settings.retry_max_wait
+        self.retry_min_wait = self._rate_limit_settings.base_delay
+        self.retry_max_wait = self._rate_limit_settings.max_delay
         self.max_tokens_per_request = base_settings.max_tokens_per_request
         self.embedding_dimensions = (
             embedding_dimensions or base_settings.embedding_dimensions
@@ -680,4 +691,451 @@ class AzureOpenAIEmbedding:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """非同期コンテキストマネージャーのエグジット"""
+        await self.close()
+
+
+# ============================================================================
+# AsyncEmbeddingClient - 新しいクリーンな実装
+# ============================================================================
+
+
+class EmbeddingClientError(Exception):
+    """Embeddingクライアント固有のエラー"""
+
+    pass
+
+
+class MaxRetriesExceededError(EmbeddingClientError):
+    """最大リトライ回数超過エラー"""
+
+    pass
+
+
+@dataclass
+class AsyncRateLimitState:
+    """レート制限状態管理（asyncio対応）"""
+
+    requests_this_minute: int = 0
+    tokens_this_minute: int = 0
+    minute_start: float = field(default_factory=time.time)
+    _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    def reset_if_needed(self) -> None:
+        """1分経過していたらカウンターをリセット"""
+        now = time.time()
+        if now - self.minute_start >= 60:
+            self.requests_this_minute = 0
+            self.tokens_this_minute = 0
+            self.minute_start = now
+
+    def can_process(self, token_count: int, settings: RateLimitSettings) -> bool:
+        """リクエスト可能かどうかを判定"""
+        self.reset_if_needed()
+        return (
+            self.requests_this_minute < settings.requests_per_minute
+            and self.tokens_this_minute + token_count <= settings.tokens_per_minute
+        )
+
+    def record_request(self, token_count: int) -> None:
+        """リクエストを記録"""
+        self.requests_this_minute += 1
+        self.tokens_this_minute += token_count
+
+
+class AsyncEmbeddingClient:
+    """
+    Azure OpenAI 非同期Embeddingクライアント
+
+    Features:
+        - 非同期バッチ処理による高スループット
+        - エクスポネンシャルバックオフによるリトライ
+        - トークン/リクエストベースのレート制限
+        - 詳細なメトリクス収集
+    """
+
+    def __init__(
+        self,
+        settings: Optional[AzureOpenAISettings] = None,
+        rate_limit_settings: Optional[RateLimitSettings] = None,
+        request_timeout: float = 30.0,
+    ):
+        """
+        クライアントを初期化。
+
+        Args:
+            settings: Azure OpenAI設定（Noneの場合は環境変数から読み込み）
+            rate_limit_settings: レート制限設定（Noneの場合は環境変数から読み込み）
+            request_timeout: リクエストタイムアウト（秒）
+        """
+        self._settings = settings or get_azure_openai_settings()
+        self._rate_limit_settings = rate_limit_settings or get_rate_limit_settings()
+        self._rate_limit_state = AsyncRateLimitState()
+
+        # タイムアウト設定付きクライアント初期化
+        self._client = AsyncAzureOpenAI(
+            azure_endpoint=self._settings.endpoint,
+            api_key=self._settings.api_key,
+            api_version=self._settings.api_version,
+            timeout=httpx.Timeout(request_timeout, connect=10.0),
+        )
+
+        # tiktokenエンコーダー（トークンカウント用）
+        try:
+            self._tokenizer = tiktoken.encoding_for_model("text-embedding-3-small")
+        except KeyError:
+            self._tokenizer = tiktoken.get_encoding("cl100k_base")
+
+        # エンドポイントURLをマスク処理（セキュリティ対策）
+        masked_endpoint = self._mask_url(self._settings.endpoint)
+        logger.info(
+            f"AsyncEmbeddingClient initialized: "
+            f"endpoint={masked_endpoint}, "
+            f"deployment={self._settings.embedding_deployment}"
+        )
+
+    @staticmethod
+    def _mask_url(url: str) -> str:
+        """URLをマスク処理（セキュリティ対策）"""
+        try:
+            parsed = urlparse(url)
+            host_parts = parsed.hostname.split(".")
+            if len(host_parts) > 2:
+                masked_host = f"{host_parts[0][:3]}***." + ".".join(host_parts[-2:])
+            else:
+                masked_host = f"***." + ".".join(host_parts[-1:])
+            return f"{parsed.scheme}://{masked_host}"
+        except Exception:
+            return "***masked***"
+
+    def count_tokens(self, text: str) -> int:
+        """テキストのトークン数をカウント"""
+        return len(self._tokenizer.encode(text))
+
+    def count_tokens_batch(self, texts: Sequence[str]) -> List[int]:
+        """複数テキストのトークン数をカウント"""
+        return [self.count_tokens(text) for text in texts]
+
+    async def _wait_for_rate_limit(self, token_count: int) -> None:
+        """レート制限に達している場合は待機（スレッドセーフ）"""
+        async with self._rate_limit_state._lock:
+            while not self._rate_limit_state.can_process(
+                token_count, self._rate_limit_settings
+            ):
+                wait_time = 60 - (
+                    time.time() - self._rate_limit_state.minute_start
+                )
+                if wait_time > 0:
+                    logger.warning(
+                        f"レート制限に達しました。{wait_time:.1f}秒待機します"
+                    )
+                    await asyncio.sleep(min(wait_time, 5))
+                self._rate_limit_state.reset_if_needed()
+
+    async def _embed_with_retry(
+        self, texts: List[str], total_tokens: int
+    ) -> List[List[float]]:
+        """
+        リトライロジック付きでEmbedding APIを呼び出し。
+
+        Args:
+            texts: 埋め込み対象のテキストリスト
+            total_tokens: 合計トークン数
+
+        Returns:
+            Embeddingベクトルのリスト
+
+        Raises:
+            MaxRetriesExceededError: 最大リトライ回数を超えた場合
+        """
+        last_exception: Optional[Exception] = None
+        for attempt in range(self._rate_limit_settings.max_retries):
+            try:
+                await self._wait_for_rate_limit(total_tokens)
+                response = await self._client.embeddings.create(
+                    model=self._settings.embedding_deployment,
+                    input=texts,
+                    dimensions=self._settings.embedding_dimensions,
+                )
+                async with self._rate_limit_state._lock:
+                    self._rate_limit_state.record_request(total_tokens)
+                # レスポンスからEmbeddingを抽出（インデックス順でソート）
+                sorted_data = sorted(response.data, key=lambda x: x.index)
+                return [item.embedding for item in sorted_data]
+            except RateLimitError as e:
+                last_exception = e
+                delay = self._calculate_backoff_delay(attempt, e)
+                logger.warning(
+                    f"レート制限エラー (試行 {attempt + 1}/{self._rate_limit_settings.max_retries}), "
+                    f"{delay:.1f}秒待機: {e}"
+                )
+                await asyncio.sleep(delay)
+            except APITimeoutError as e:
+                last_exception = e
+                delay = self._calculate_backoff_delay(attempt)
+                logger.warning(
+                    f"タイムアウトエラー (試行 {attempt + 1}/{self._rate_limit_settings.max_retries}), "
+                    f"{delay:.1f}秒待機: {e}"
+                )
+                await asyncio.sleep(delay)
+            except APIError as e:
+                last_exception = e
+                if e.status_code and e.status_code >= 500:
+                    delay = self._calculate_backoff_delay(attempt)
+                    logger.warning(
+                        f"サーバーエラー (試行 {attempt + 1}/{self._rate_limit_settings.max_retries}), "
+                        f"{delay:.1f}秒待機: {e}"
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    raise
+
+        # 適切な例外チェーン
+        raise MaxRetriesExceededError(
+            f"最大リトライ回数 ({self._rate_limit_settings.max_retries}) を超えました"
+        ) from last_exception
+
+    def _calculate_backoff_delay(
+        self, attempt: int, rate_limit_error: Optional[RateLimitError] = None
+    ) -> float:
+        """エクスポネンシャルバックオフの待機時間を計算"""
+        # RateLimitErrorからretry-afterヘッダーを取得
+        if rate_limit_error and hasattr(rate_limit_error, "response"):
+            retry_after = rate_limit_error.response.headers.get("retry-after")
+            if retry_after:
+                return min(float(retry_after), self._rate_limit_settings.max_delay)
+
+        # エクスポネンシャルバックオフ（ジッター付き）
+        delay = self._rate_limit_settings.base_delay * (2 ** attempt)
+        jitter = random.uniform(0, 0.1 * delay)
+        return min(delay + jitter, self._rate_limit_settings.max_delay)
+
+    async def embed_single(self, text: str) -> EmbeddingResult:
+        """
+        単一テキストのEmbeddingを生成。
+
+        Args:
+            text: 埋め込み対象のテキスト
+
+        Returns:
+            EmbeddingResult: 生成結果
+        """
+        token_count = self.count_tokens(text)
+        if token_count > self._settings.max_tokens_per_request:
+            raise ValueError(
+                f"テキストのトークン数が上限を超えています: "
+                f"{token_count} > {self._settings.max_tokens_per_request}"
+            )
+
+        start_time = time.perf_counter()
+        embeddings = await self._embed_with_retry([text], token_count)
+        latency_ms = (time.perf_counter() - start_time) * 1000
+
+        return EmbeddingResult(
+            text=text,
+            embedding=embeddings[0],
+            token_count=token_count,
+            latency_ms=latency_ms,
+        )
+
+    async def embed_batch(
+        self,
+        texts: Sequence[str],
+        batch_size: Optional[int] = None,
+    ) -> BatchEmbeddingResult:
+        """
+        複数テキストのEmbeddingをバッチ生成。
+
+        Args:
+            texts: 埋め込み対象のテキストリスト
+            batch_size: バッチサイズ（Noneの場合はトークン数で自動調整）
+
+        Returns:
+            BatchEmbeddingResult: バッチ生成結果
+        """
+        if not texts:
+            return BatchEmbeddingResult(
+                results=[], total_tokens=0, total_latency_ms=0
+            )
+
+        start_time = time.perf_counter()
+        token_counts = self.count_tokens_batch(texts)
+        # バッチ分割（トークン制限を考慮）
+        batches = self._create_batches(texts, token_counts, batch_size)
+
+        results: List[EmbeddingResult] = []
+        failed_indices: List[int] = []
+        total_tokens = 0
+        current_index = 0
+
+        for batch_texts, batch_tokens in batches:
+            try:
+                embeddings = await self._embed_with_retry(
+                    batch_texts, sum(batch_tokens)
+                )
+                for i, (text, embedding, tokens) in enumerate(
+                    zip(batch_texts, embeddings, batch_tokens)
+                ):
+                    results.append(
+                        EmbeddingResult(
+                            text=text,
+                            embedding=embedding,
+                            token_count=tokens,
+                            latency_ms=0,  # バッチ全体のレイテンシのみ記録
+                        )
+                    )
+                    total_tokens += tokens
+            except Exception as e:
+                logger.error(f"バッチEmbedding生成に失敗: {e}")
+                for i in range(len(batch_texts)):
+                    failed_indices.append(current_index + i)
+            current_index += len(batch_texts)
+
+        total_latency_ms = (time.perf_counter() - start_time) * 1000
+
+        return BatchEmbeddingResult(
+            results=results,
+            total_tokens=total_tokens,
+            total_latency_ms=total_latency_ms,
+            failed_indices=failed_indices,
+        )
+
+    def _create_batches(
+        self,
+        texts: Sequence[str],
+        token_counts: List[int],
+        batch_size: Optional[int],
+    ) -> List[Tuple[List[str], List[int]]]:
+        """
+        トークン制限を考慮してバッチを作成。
+
+        Args:
+            texts: テキストリスト
+            token_counts: 各テキストのトークン数
+            batch_size: 最大バッチサイズ
+
+        Returns:
+            (texts, token_counts)のタプルのリスト
+        """
+        max_tokens = self._settings.max_tokens_per_request
+        effective_batch_size = batch_size or 16
+
+        batches: List[Tuple[List[str], List[int]]] = []
+        current_texts: List[str] = []
+        current_tokens: List[int] = []
+        current_token_sum = 0
+
+        for text, tokens in zip(texts, token_counts):
+            # 単一テキストが制限を超える場合はスキップ（エラーログ出力）
+            if tokens > max_tokens:
+                logger.warning(
+                    f"トークン数が上限を超えるテキストをスキップ: "
+                    f"{tokens} > {max_tokens}"
+                )
+                continue
+
+            # バッチサイズまたはトークン制限に達したら新バッチ
+            if (
+                len(current_texts) >= effective_batch_size
+                or current_token_sum + tokens > max_tokens
+            ):
+                if current_texts:
+                    batches.append((current_texts, current_tokens))
+                current_texts = []
+                current_tokens = []
+                current_token_sum = 0
+
+            current_texts.append(text)
+            current_tokens.append(tokens)
+            current_token_sum += tokens
+
+        # 残りをバッチに追加
+        if current_texts:
+            batches.append((current_texts, current_tokens))
+
+        return batches
+
+    async def embed_with_chunking(
+        self,
+        text: str,
+        chunk_size: int = 512,
+        overlap: int = 50,
+        aggregation: str = "mean",
+    ) -> EmbeddingResult:
+        """
+        長文テキストをチャンク分割してEmbeddingを生成。
+
+        Args:
+            text: 埋め込み対象のテキスト
+            chunk_size: チャンクサイズ（トークン数）
+            overlap: チャンク間のオーバーラップ（トークン数）
+            aggregation: 集約方法（"mean" | "first" | "weighted_mean"）
+
+        Returns:
+            EmbeddingResult: 集約されたEmbedding結果
+        """
+        tokens = self._tokenizer.encode(text)
+        total_tokens = len(tokens)
+
+        # チャンク分割が不要な場合
+        if total_tokens <= self._settings.max_tokens_per_request:
+            return await self.embed_single(text)
+
+        # チャンク作成
+        chunks: List[str] = []
+        start = 0
+        while start < total_tokens:
+            end = min(start + chunk_size, total_tokens)
+            chunk_tokens = tokens[start:end]
+            chunks.append(self._tokenizer.decode(chunk_tokens))
+            start += chunk_size - overlap
+
+        # バッチでEmbedding生成
+        batch_result = await self.embed_batch(chunks)
+
+        if not batch_result.results:
+            raise ValueError("すべてのチャンクのEmbedding生成に失敗しました")
+
+        # 集約
+        aggregated = self._aggregate_embeddings(
+            [r.embedding for r in batch_result.results],
+            [r.token_count for r in batch_result.results],
+            aggregation,
+        )
+
+        return EmbeddingResult(
+            text=text[:100] + "..." if len(text) > 100 else text,
+            embedding=aggregated,
+            token_count=total_tokens,
+            latency_ms=batch_result.total_latency_ms,
+        )
+
+    def _aggregate_embeddings(
+        self,
+        embeddings: List[List[float]],
+        weights: List[int],
+        method: str,
+    ) -> List[float]:
+        """複数のEmbeddingを集約"""
+        arr = np.array(embeddings)
+
+        if method == "first":
+            return arr[0].tolist()
+        elif method == "mean":
+            return np.mean(arr, axis=0).tolist()
+        elif method == "weighted_mean":
+            weights_arr = np.array(weights, dtype=float)
+            weights_arr /= weights_arr.sum()
+            return np.average(arr, axis=0, weights=weights_arr).tolist()
+        else:
+            raise ValueError(f"無効な集約方法: {method}")
+
+    async def close(self) -> None:
+        """クライアントをクローズ"""
+        await self._client.close()
+        logger.info("AsyncEmbeddingClient closed")
+
+    async def __aenter__(self) -> "AsyncEmbeddingClient":
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
         await self.close()
