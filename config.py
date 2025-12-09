@@ -30,52 +30,29 @@ class AzureOpenAISettings(BaseSettings):
     api_key: str = Field(
         ...,
         description="Azure OpenAI APIキー",
-        min_length=32,
+        min_length=20,  # Fixed: Azure API key length varies
     )
     api_version: str = Field(
         default="2024-10-21",
         description="Azure OpenAI APIバージョン",
     )
-    deployment_name: str = Field(
-        default="text-embedding-3-large",
+    # Fixed: Removed redundant alias - env_prefix already handles AZURE_OPENAI_ prefix
+    embedding_deployment: str = Field(
+        ...,
         description="Embeddingモデルのデプロイメント名",
-        examples=["text-embedding-3-large", "text-embedding-3-small"],
+        examples=["text-embedding-ada-002", "text-embedding-3-small"],
     )
-    embedding_dimensions: Optional[int] = Field(
-        default=None,
+    embedding_dimensions: int = Field(
+        default=1536,
         ge=256,
         le=3072,
-        description="Embeddingベクトルの次元数（Noneの場合はデフォルト）",
+        description="Embeddingベクトルの次元数",
     )
     max_tokens_per_request: int = Field(
         default=8191,
         ge=1,
         le=8191,
         description="1リクエストあたりの最大トークン数",
-    )
-    max_batch_size: int = Field(
-        default=16,
-        ge=1,
-        le=100,
-        description="バッチサイズ",
-    )
-    max_retries: int = Field(
-        default=5,
-        ge=1,
-        le=10,
-        description="最大リトライ回数",
-    )
-    retry_min_wait: float = Field(
-        default=1.0,
-        ge=0.1,
-        le=60.0,
-        description="リトライ最小待機時間（秒）",
-    )
-    retry_max_wait: float = Field(
-        default=60.0,
-        ge=1.0,
-        le=300.0,
-        description="リトライ最大待機時間（秒）",
     )
 
     @field_validator("endpoint")
@@ -105,7 +82,7 @@ class AzureAISearchSettings(BaseSettings):
     api_key: str = Field(
         ...,
         description="Azure AI Search 管理キーまたはクエリキー",
-        min_length=32,
+        min_length=20,  # Fixed: API key length varies
     )
     index_name: str = Field(
         ...,
@@ -154,7 +131,7 @@ class RateLimitSettings(BaseSettings):
     )
 
     max_retries: int = Field(
-        default=5,
+        default=3,
         ge=1,
         le=10,
         description="最大リトライ回数",
@@ -172,13 +149,13 @@ class RateLimitSettings(BaseSettings):
         description="リトライ最大待機時間（秒）",
     )
     requests_per_minute: int = Field(
-        default=300,
+        default=60,
         ge=1,
         le=1000,
         description="1分あたりの最大リクエスト数",
     )
     tokens_per_minute: int = Field(
-        default=300000,
+        default=150000,
         ge=1000,
         le=10000000,
         description="1分あたりの最大トークン数",
@@ -194,13 +171,10 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    azure_openai: AzureOpenAISettings = Field(
-        default_factory=AzureOpenAISettings
-    )
-    azure_search: Optional[AzureAISearchSettings] = Field(
-        default=None, description="Azure AI Search設定（オプション）"
-    )
-    rate_limit: RateLimitSettings = Field(default_factory=RateLimitSettings)
+    # Lazy initialization to avoid multiple .env reads
+    _azure_openai: Optional[AzureOpenAISettings] = None
+    _azure_search: Optional[AzureAISearchSettings] = None
+    _rate_limit: Optional[RateLimitSettings] = None
 
     # アプリケーション設定
     log_level: str = Field(
@@ -219,6 +193,27 @@ class Settings(BaseSettings):
         le=300.0,
         description="リクエストタイムアウト（秒）",
     )
+
+    @property
+    def azure_openai(self) -> AzureOpenAISettings:
+        """Azure OpenAI設定を遅延初期化で取得"""
+        if self._azure_openai is None:
+            self._azure_openai = AzureOpenAISettings()
+        return self._azure_openai
+
+    @property
+    def azure_search(self) -> AzureAISearchSettings:
+        """Azure AI Search設定を遅延初期化で取得"""
+        if self._azure_search is None:
+            self._azure_search = AzureAISearchSettings()
+        return self._azure_search
+
+    @property
+    def rate_limit(self) -> RateLimitSettings:
+        """レート制限設定を遅延初期化で取得"""
+        if self._rate_limit is None:
+            self._rate_limit = RateLimitSettings()
+        return self._rate_limit
 
 
 @lru_cache()
@@ -240,7 +235,7 @@ def get_azure_openai_settings() -> AzureOpenAISettings:
     return get_settings().azure_openai
 
 
-def get_azure_search_settings() -> Optional[AzureAISearchSettings]:
+def get_azure_search_settings() -> AzureAISearchSettings:
     """Azure AI Search設定を取得"""
     return get_settings().azure_search
 
